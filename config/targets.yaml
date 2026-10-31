@@ -28,11 +28,13 @@ targets:
     active: true
   - username: base
     active: true
-  - username: ethereum
+  - username: RobinhoodApp
     active: true
+
+  # Parked: keeps its seen-set, so turning it back on resumes without a gap.
+  - username: ethereum
+    active: false
 
   # Widen once the funnel is tuned.
   - username: coinbase
-    active: false
-  - username: RobinhoodApp
     active: false
