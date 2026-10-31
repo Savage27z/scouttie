@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+data
+tests
+leads
+.pytest_cache
+__pycache__
+*.pyc
+.venv
+*.egg-info
