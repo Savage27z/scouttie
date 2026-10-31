@@ -1,0 +1,38 @@
+# Ecosystem accounts to watch for NEW FOLLOWERS.
+#
+# The premise: these accounts barely follow anyone, but new projects are created
+# daily and one of the first things they do is follow the ecosystem they build on.
+# So we watch the inbound side.
+#
+# Handles are resolved and validated at startup -- a typo fails loudly rather than
+# producing a silently dead target.
+#
+# Each extra target adds proportional funnel input. Start with 3-5, tune the funnel,
+# then widen. Set `active: false` to park one without losing its seen-set.
+
+defaults:
+  # Starting interval. The collector measures real new-follower rate and adapts
+  # toward ~75% page fill, so this is only a cold-start value.
+  poll_interval_s: 3600
+  page_size: 200
+  # Adaptive poll interval bounds. The max is detection latency (how long a new project can
+  # sit unnoticed). Each poll costs ~$0.002, so 2h is ~$0.02/day per target.
+  min_poll_interval_s: 900
+  max_poll_interval_s: 7200
+  # Safety cap on pagination per poll, so a follower spike cannot run away with
+  # your credit balance. 10 pages = 2000 profiles = ~$0.02.
+  max_pages_per_poll: 10
+
+targets:
+  - username: solana
+    active: true
+  - username: base
+    active: true
+  - username: ethereum
+    active: true
+
+  # Widen once the funnel is tuned.
+  - username: coinbase
+    active: false
+  - username: RobinhoodApp
+    active: false

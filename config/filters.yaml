@@ -1,0 +1,223 @@
+# Funnel thresholds. Nothing here is hardcoded in Python on purpose: tuning this
+# file plus `scout replay` is the main development loop, and costs no API calls.
+
+# ---------------------------------------------------------------------------
+# Stage 1 -- hard structural filters. Free. Kills bots, lurkers and airdrop
+# farmers. Target survival ~10-20%; `scout measure` reports the real rate.
+#
+# NOTE: deliberately NO maximum account age and NO minimum-follower cutoff beyond
+# a tiny bot floor. Young + small + branded is exactly the target. Thin-profile
+# early teams are the best leads precisely because nobody else has found them.
+# ---------------------------------------------------------------------------
+stage1:
+  drop_protected: true
+  drop_default_avatar: true
+  # Empty bio AND no link = nothing to judge, and no project looks like this.
+  drop_if_no_bio_and_no_url: true
+  # A brand-new project that just followed the ecosystem often has <10 followers --
+  # exactly the early lead we want. So the follower floors below do NOT apply to
+  # accounts linking a real custom domain (the strongest project signal there is).
+  follower_floors_exempt_if_custom_domain: true
+  min_followers: 10
+  # A silent account with almost no followers is a fresh bot.
+  min_followers_if_no_posts: 50
+  # Following the official ecosystem account is a standard airdrop-farming task,
+  # so farmers arrive in bulk. This is one of the strongest negative signals.
+  max_following: 2000
+
+# ---------------------------------------------------------------------------
+# Stage 2 -- project-shape scoring. Free. Score >= threshold becomes a candidate.
+# ---------------------------------------------------------------------------
+stage2:
+  # UNTUNED GUESS. A personal website alone (+4) must not pass; re-tune with
+  # `scout replay` once real accounts are stored.
+  threshold: 5.0
+
+  weights:
+    # A real website domain is the single strongest discriminator. New projects
+    # have a site or docs; individuals have nothing or a link aggregator.
+    custom_domain_url: 4.0
+    domain_in_bio: 2.0
+    bio_keyword_each: 1.0
+    bio_keyword_cap: 3.0
+    brand_shaped_name: 2.0
+    ticker_in_name: 1.5
+    young_account: 1.5
+    healthy_follower_ratio: 1.0
+    # Negatives
+    personal_marker_each: -2.5
+    personal_marker_cap: -5.0
+    human_name_shape: -2.0
+    link_aggregator_url: -1.0
+    # t.co etc: the provider may return unexpanded short links, so we cannot tell
+    # a project site from a personal one. `scout measure` reports how common this is.
+    unresolved_short_url: 1.5
+    code_host_url: 1.0
+    # Convergence is a BONUS, not a bypass: airdrop farmers often follow several
+    # ecosystem accounts at once, so it cannot be trusted on its own.
+    # Memecoin/token-page markers (a contract address or pump.fun mention in the
+    # bio). Seen on live data: roughly half of what cleared the free filters. A
+    # penalty, not a drop -- a real project can also list its token address.
+    memecoin_marker: -2.5
+    convergence_bonus_per_extra_target: 2.5
+    convergence_bonus_cap: 5.0
+
+  young_account_max_days: 90
+  healthy_follower_ratio_min: 1.0
+
+  # Link aggregators and socials are NOT a project website.
+  link_aggregator_domains:
+    - linktr.ee
+    - linktree.com
+    - beacons.ai
+    - bio.link
+    - carrd.co
+    - allmylinks.com
+    - solo.to
+    - t.me
+    - x.com
+    - twitter.com
+    - instagram.com
+    - tiktok.com
+    - youtube.com
+    - facebook.com
+    - discord.gg
+    - medium.com
+    # Token-launch pages, not project websites (seen on live data: memecoin pages)
+    - pump.fun
+
+  # Deliberately narrow. Bare 'memecoin' is NOT here: a DEX that swaps memecoins is not
+  # one (found on live data), and 'ca' would hit 'Los Angeles, CA'. A pasted contract
+  # address is detected separately in code.
+  memecoin_terms:
+    - pump.fun
+    - pumpfun
+    - contract address
+
+  short_url_domains:
+    - t.co
+    - bit.ly
+    - tinyurl.com
+    - ow.ly
+
+  code_host_domains:
+    - github.com
+    - gitlab.com
+
+  bio_keywords:
+    - protocol
+    - mainnet
+    - testnet
+    - devnet
+    - docs
+    - sdk
+    - onchain
+    - on-chain
+    - rollup
+    - liquidity
+    - staking
+    - restaking
+    - perps
+    - vault
+    - oracle
+    - zk
+    - rwa
+    - launchpad
+    - infrastructure
+    - permissionless
+    - non-custodial
+    - smart contract
+    - building
+    - now live
+    - audited
+    - whitepaper
+    - tokenomics
+
+  # Brand-shaped name tokens.
+  brand_name_tokens:
+    - protocol
+    - labs
+    - finance
+    - network
+    - dao
+    - foundation
+    - capital
+    - ventures
+    - exchange
+    - swap
+    - bridge
+    - wallet
+    - studios
+    - xyz
+    - fi
+
+  # Strong human signals. A person, not a product.
+  personal_markers:
+    - "he/him"
+    - "she/her"
+    - "they/them"
+    - "views my own"
+    - "views are my own"
+    - "opinions are my own"
+    - "personal account"
+    - "not financial advice"
+    - "nfa"
+    - "dyor"
+    - "trader"
+    - "degen"
+    - "shitposter"
+    - "father"
+    - "girl dad"
+    - "husband"
+    - "wife"
+    - "gm"
+    - "anon"
+    - "intern"
+    - "founder of"
+    - "ceo of"
+    - "working at"
+    - "engineer at"
+
+# ---------------------------------------------------------------------------
+# Stage 3 -- convergence. Free, and near-definitive.
+#
+# A new account that follows 2+ tracked ecosystems inside the window is almost
+# certainly a project doing launch prep; individuals follow one. Bypasses the
+# stage-2 threshold entirely.
+# ---------------------------------------------------------------------------
+stage3:
+  window_hours: 72
+  min_targets: 2
+
+# ---------------------------------------------------------------------------
+# Stage 4/5 -- LLM. Only ever runs on stage-2/3 survivors.
+# ---------------------------------------------------------------------------
+llm:
+  # DeepSeek. `deepseek-flash` is ~$0.15 in / $0.60 out per 1M tokens (off-peak is half
+  # again), so 600 classifications/day costs cents. Switch summarize_model to
+  # `deepseek-v4-pro` (~4x the price) if the Flash summaries aren't good enough.
+  classify_model: deepseek-flash
+  summarize_model: deepseek-flash
+  # Hard cost guards. Exceeding these defers work to the next day rather than
+  # silently spending.
+  # Memecoins/pump.fun tokens have no custom contracts to audit. The classifier still
+  # labels them (category 'memecoin') so the verdict is stored, but they are
+  # suppressed from alerts and never get the expensive summary. Set false to see them.
+  suppress_memecoins: true
+  # ...but only when the classifier is at least this sure. Below it the lead stays visible.
+  memecoin_suppress_min_confidence: 0.7
+  max_classify_per_day: 600
+  max_summarize_per_day: 80
+  # The model is underconfident on thin brand-new profiles (0.4-0.55 for obvious projects),
+  # and summaries cost a fraction of a cent, so summarise down to 0.4.
+  min_confidence_to_summarize: 0.4
+
+# ---------------------------------------------------------------------------
+# Alerting. Over-alerting is the most likely way this project fails, so digest
+# is the default and instant is the narrow exception.
+# ---------------------------------------------------------------------------
+alerts:
+  instant_on_convergence: true
+  instant_min_confidence: 0.85
+  digest_hour_utc: 7
+  max_instant_per_hour: 6
