@@ -103,10 +103,15 @@ class Telegram:
     def __init__(self, token: str, chat_id: str, client: httpx.Client | None = None):
         if not token or not chat_id:
             raise TelegramError("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID are required")
+        # One id, or several separated by commas. The first is the primary: a failed send
+        # to it fails the whole alert (the lead stays queued); extras are best-effort.
         try:
-            self.chat_id = int(chat_id)
+            self.chat_ids = list(dict.fromkeys(int(p) for p in str(chat_id).split(",") if p.strip()))
         except ValueError as exc:
-            raise TelegramError("TELEGRAM_CHAT_ID must be numeric") from exc
+            raise TelegramError("TELEGRAM_CHAT_ID must be numeric (comma-separated for several)") from exc
+        if not self.chat_ids:
+            raise TelegramError("TELEGRAM_CHAT_ID is empty")
+        self.chat_id = self.chat_ids[0]
         self._base = f"{API}/bot{token}"
         self._client = client or httpx.Client(timeout=40.0)
         self._last_send = 0.0
@@ -127,11 +132,21 @@ class Telegram:
 
     def send(self, text: str, *, account_id: str | None = None) -> int:
         # Telegram allows ~1 message/second to one chat.
+        primary_mid = self._send_to(self.chat_id, text, account_id)
+        for extra in self.chat_ids[1:]:
+            try:
+                self._send_to(extra, text, account_id)
+            except TelegramError as exc:
+                # Raising here would make the caller resend to the primary too.
+                log.warning("send to extra chat %s failed: %s", extra, exc)
+        return primary_mid
+
+    def _send_to(self, chat_id: int, text: str, account_id: str | None) -> int:
         wait = 1.1 - (time.monotonic() - self._last_send)
         if wait > 0:
             time.sleep(wait)
         payload: dict[str, Any] = {
-            "chat_id": self.chat_id,
+            "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
@@ -156,9 +171,9 @@ class Telegram:
         except TelegramError as exc:
             log.debug("answerCallbackQuery: %s", exc)
 
-    def clear_buttons(self, message_id: int) -> None:
+    def clear_buttons(self, message_id: int, chat_id: int | None = None) -> None:
         try:
-            self._call("editMessageReplyMarkup", chat_id=self.chat_id, message_id=message_id,
+            self._call("editMessageReplyMarkup", chat_id=chat_id or self.chat_id, message_id=message_id,
                        reply_markup={"inline_keyboard": []})
         except TelegramError as exc:
             log.debug("editMessageReplyMarkup: %s", exc)
@@ -167,7 +182,7 @@ class Telegram:
 def handle_callback(db: Database, tg: Telegram, cb: dict[str, Any]) -> str | None:
     """Apply one button press. Returns the new state, or None if ignored."""
     chat = ((cb.get("message") or {}).get("chat") or {}).get("id")
-    if chat != tg.chat_id:
+    if chat not in tg.chat_ids:
         log.warning("ignoring callback from foreign chat %r", chat)
         return None
     m = _CALLBACK.match(cb.get("data") or "")
@@ -182,7 +197,7 @@ def handle_callback(db: Database, tg: Telegram, cb: dict[str, Any]) -> str | Non
     tg.answer_callback(cb["id"], f"Marked {state.replace('_', ' ')}")
     mid = (cb.get("message") or {}).get("message_id")
     if mid:
-        tg.clear_buttons(int(mid))
+        tg.clear_buttons(int(mid), chat)
     return state
 
 

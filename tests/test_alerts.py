@@ -15,7 +15,8 @@ class FakeTG(tgm.Telegram):
     """Telegram with the network replaced by an in-memory log."""
 
     def __init__(self, chat_id="42"):
-        self.chat_id = int(chat_id)
+        self.chat_ids = [int(p) for p in str(chat_id).split(",")]
+        self.chat_id = self.chat_ids[0]
         self.sent = []
         self.answers = []
         self.cleared = []
@@ -29,8 +30,9 @@ class FakeTG(tgm.Telegram):
     def answer_callback(self, callback_id, text):
         self.answers.append((callback_id, text))
 
-    def clear_buttons(self, message_id):
+    def clear_buttons(self, message_id, chat_id=None):
         self.cleared.append(message_id)
+        self.cleared_in = chat_id
 
 
 @pytest.fixture
@@ -97,6 +99,74 @@ def test_callback_for_unknown_candidate(db):
     tg = FakeTG()
     assert tgm.handle_callback(db, tg, cb("i:12345")) is None
     assert tg.answers  # user gets feedback rather than a silent spinner
+
+
+def _real_tg(chat_ids, handler):
+    return tgm.Telegram("TOK", chat_ids, client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_chat_id_list_is_parsed_and_deduplicated():
+    tg = _real_tg("42, 7,42", lambda r: httpx.Response(200, json={"ok": True, "result": {}}))
+    assert tg.chat_ids == [42, 7] and tg.chat_id == 42
+
+
+@pytest.mark.parametrize("bad", ["abc", "42,x", ",,"])
+def test_bad_chat_id_list_rejected(bad):
+    with pytest.raises(tgm.TelegramError):
+        _real_tg(bad, lambda r: httpx.Response(200, json={"ok": True, "result": {}}))
+
+
+def test_alert_goes_to_every_allowed_chat(monkeypatch):
+    monkeypatch.setattr(tgm.time, "sleep", lambda s: None)
+    seen = []
+
+    def handler(req):
+        import json
+        seen.append(json.loads(req.content)["chat_id"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": len(seen)}})
+
+    tg = _real_tg("42,7", handler)
+    assert tg.send("hi", account_id="5") == 1  # returns the primary chat's message id
+    assert seen == [42, 7]
+
+
+def test_failed_send_to_extra_chat_does_not_fail_or_resend_the_alert(monkeypatch):
+    monkeypatch.setattr(tgm.time, "sleep", lambda s: None)
+    import json
+    calls = []
+
+    def handler(req):
+        chat = json.loads(req.content)["chat_id"]
+        calls.append(chat)
+        if chat == 7:  # the second person never pressed Start
+            return httpx.Response(400, json={"ok": False, "description": "chat not found"})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
+
+    tg = _real_tg("42,7", handler)
+    assert tg.send("hi") == 9 and calls == [42, 7]
+
+
+def test_failed_send_to_primary_raises_before_touching_extras(monkeypatch):
+    monkeypatch.setattr(tgm.time, "sleep", lambda s: None)
+    import json
+    calls = []
+
+    def handler(req):
+        calls.append(json.loads(req.content)["chat_id"])
+        return httpx.Response(400, json={"ok": False, "description": "chat not found"})
+
+    with pytest.raises(tgm.TelegramError):
+        _real_tg("42,7", handler).send("hi")
+    assert calls == [42]  # no partial delivery that a retry would duplicate
+
+
+def test_button_press_from_second_allowed_chat_is_honoured(db):
+    ready(db, 5)
+    tg = FakeTG("42,7")
+    assert tgm.handle_callback(db, tg, cb("i:5", chat=7, mid=11)) == "interested"
+    assert tg.cleared == [11] and tg.cleared_in == 7  # buttons cleared in the chat that pressed
+    ready(db, 6)
+    assert tgm.handle_callback(db, tg, cb("i:6", chat=999)) is None  # still not just anyone
 
 
 def test_token_never_leaks_into_error_message():
