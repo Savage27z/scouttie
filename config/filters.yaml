@@ -221,3 +221,10 @@ alerts:
   instant_min_confidence: 0.85
   digest_hour_utc: 7
   max_instant_per_hour: 6
+  # Hard ceilings: the first live digest sent ~75 projects in one burst. Instant alerts
+  # are for convergence, so a handful a day; the digest is a short ranked list. Anything
+  # past the cap is shelved (kept in the DB, never sent).
+  max_instant_per_day: 6
+  digest_max_items: 10
+  # No own smart contracts = not an audit lead. Kept in the DB, never in the digest.
+  digest_skip_no_contracts: true

@@ -137,8 +137,12 @@ class Telegram:
             try:
                 self._send_to(extra, text, account_id)
             except TelegramError as exc:
-                # Raising here would make the caller resend to the primary too.
-                log.warning("send to extra chat %s failed: %s", extra, exc)
+                # Raising here would make the caller resend to the primary too. Warn once
+                # per chat: an unreachable one would otherwise log on every message.
+                warned = self.__dict__.setdefault("_warned_chats", set())
+                (log.debug if extra in warned else log.warning)(
+                    "send to extra chat %s failed: %s", extra, exc)
+                warned.add(extra)
         return primary_mid
 
     def _send_to(self, chat_id: int, text: str, account_id: str | None) -> int:

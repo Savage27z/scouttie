@@ -235,6 +235,76 @@ def test_empty_digest_sends_nothing_but_marks_the_day(db, cfg):
     assert db.usage_today("digest_sent") == 1
 
 
+# -------------------------------------------------------- spam ceilings
+
+
+def ready_c(db, i, contracts=None, conv=1, conf=0.7):
+    ready(db, i, conv=conv, conf=conf)
+    db.upsert_candidate(str(i), llm_contracts=contracts)
+
+
+def test_digest_is_capped_ranked_and_shelves_the_rest(db, cfg):
+    cfg.filters["alerts"]["digest_max_items"] = 3
+    for i in range(1, 11):
+        ready_c(db, i, contracts="unclear", conf=0.5)
+    ready_c(db, 11, contracts="yes", conf=0.5)        # own contracts outranks the rest
+    ready_c(db, 12, contracts="unclear", conv=2, conf=0.5)  # convergence outranks plain unclear
+    tg = FakeTG()
+    assert routing.send_digest(db, cfg, tg) == 3
+    sent_ids = {aid for _, aid in tg.sent if aid}
+    assert len(sent_ids) == 3 and {"11", "12"} <= sent_ids  # best two always make the cut
+    counts = db.candidate_state_counts()
+    assert counts == {"digested": 3, "shelved": 9}   # nothing left to leak into tomorrow
+    assert "top 3 of 12" in tg.sent[0][0]
+
+
+def test_digest_skips_leads_without_own_contracts(db, cfg):
+    ready_c(db, 1, contracts="no", conv=3, conf=0.99)
+    ready_c(db, 2, contracts="yes")
+    tg = FakeTG()
+    assert routing.send_digest(db, cfg, tg) == 1
+    assert db.get_candidate("1")["state"] == "shelved" and db.get_candidate("2")["state"] == "digested"
+
+
+def test_digest_of_only_no_contract_leads_sends_nothing(db, cfg):
+    ready_c(db, 1, contracts="no")
+    tg = FakeTG()
+    assert routing.send_digest(db, cfg, tg) == 0 and tg.sent == []
+    assert db.get_candidate("1")["state"] == "shelved"
+
+
+def test_convergence_does_not_make_a_no_contracts_lead_instant(db, cfg):
+    ready_c(db, 1, contracts="no", conv=3, conf=0.99)
+    assert routing.route_instant(db, cfg, FakeTG()) == 0
+    assert db.get_candidate("1")["state"] == "ready"
+
+
+def test_instant_daily_cap(db, cfg):
+    cfg.filters["alerts"]["max_instant_per_hour"] = 100
+    cfg.filters["alerts"]["max_instant_per_day"] = 3
+    for i in range(1, 9):
+        ready_c(db, i, contracts="yes", conv=3)
+    assert routing.route_instant(db, cfg, FakeTG()) == 3
+    assert routing.route_instant(db, cfg, FakeTG()) == 0  # a later cycle cannot exceed the day cap
+    assert db.candidate_state_counts() == {"alerted": 3, "ready": 5}
+
+
+def test_unreachable_extra_chat_warns_once(monkeypatch, caplog):
+    import json, logging
+    monkeypatch.setattr(tgm.time, "sleep", lambda s: None)
+
+    def handler(req):
+        if json.loads(req.content)["chat_id"] == 7:
+            return httpx.Response(400, json={"ok": False, "description": "chat not found"})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    tg = _real_tg("42,7", handler)
+    with caplog.at_level(logging.WARNING, logger="scout.alerts.telegram"):
+        for _ in range(5):
+            tg.send("hi")
+    assert len([r for r in caplog.records if "extra chat" in r.getMessage()]) == 1
+
+
 # ------------------------------------------------------- has_own_contracts
 
 
